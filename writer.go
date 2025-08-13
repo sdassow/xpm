@@ -6,6 +6,13 @@ import (
 	"image/color"
 	"io"
 	"strings"
+
+	"golang.org/x/image/draw"
+)
+
+const (
+	MaxCharacters     = 80
+	AllowedCharacters = " .oO+@#$%&*=-;:>,<1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 )
 
 type XPMOptions struct {
@@ -16,7 +23,7 @@ func Encode(w io.Writer, m image.Image, opts ...XPMOptions) error {
 	var name string
 
 	if len(opts) > 0 {
-		name = opts[0].Name
+		name = sanitizeName(opts[0].Name)
 	}
 
 	if name == "" {
@@ -26,20 +33,12 @@ func Encode(w io.Writer, m image.Image, opts ...XPMOptions) error {
 	b := m.Bounds()
 	width, height := b.Dx(), b.Dy()
 
-	colorKeys := make(map[color.Color]string)
+	palette, colorKeys := generatePalette(m)
 
-	var palette []color.Color
+	if len(palette) > MaxCharacters {
+		m = quantizeImage(m, MaxCharacters)
 
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			c := m.At(x, y)
-
-			if _, ok := colorKeys[c]; !ok {
-				colorKeys[c] = ""
-
-				palette = append(palette, c)
-			}
-		}
+		palette, colorKeys = generatePalette(m)
 	}
 
 	symbols := generateSymbols(len(palette))
@@ -82,10 +81,31 @@ func Encode(w io.Writer, m image.Image, opts ...XPMOptions) error {
 	return nil
 }
 
+func generatePalette(img image.Image) ([]color.Color, map[color.Color]string) {
+	var palette []color.Color
+
+	b := img.Bounds()
+	colorKeys := make(map[color.Color]string)
+
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			c := img.At(x, y)
+
+			if _, ok := colorKeys[c]; !ok {
+				colorKeys[c] = ""
+
+				palette = append(palette, c)
+			}
+		}
+	}
+
+	return palette, colorKeys
+}
+
 func generateSymbols(n int) []string {
-	chars := []rune(" .oO+@#$%&*=-;:>,<1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+	chars := []rune(AllowedCharacters)
 	if n > len(chars) {
-		panic("too many colors for simple symbol set")
+		n = len(chars)
 	}
 
 	syms := make([]string, n)
@@ -95,4 +115,67 @@ func generateSymbols(n int) []string {
 	}
 
 	return syms
+}
+
+func quantizeImage(src image.Image, maxColors int) image.Image {
+	b := src.Bounds()
+
+	dst := image.NewPaletted(b, generateSimplePalette(src, maxColors))
+
+	draw.FloydSteinberg.Draw(dst, b, src, image.Point{})
+
+	return dst
+}
+
+func generateSimplePalette(img image.Image, maxColors int) color.Palette {
+	seen := make(map[color.Color]struct{})
+
+	var palette color.Palette
+
+	b := img.Bounds()
+
+	step := max((b.Dx()*b.Dy())/maxColors, 1)
+
+	count := 0
+
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			if count%step == 0 {
+				c := img.At(x, y)
+
+				if _, ok := seen[c]; !ok {
+					seen[c] = struct{}{}
+
+					palette = append(palette, c)
+
+					if len(palette) >= maxColors {
+						return palette
+					}
+				}
+			}
+
+			count++
+		}
+	}
+
+	return palette
+}
+
+func sanitizeName(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "image"
+	}
+
+	var out strings.Builder
+
+	for i, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (i > 0 && r >= '0' && r <= '9') {
+			out.WriteRune(r)
+		} else {
+			out.WriteByte('_')
+		}
+	}
+
+	return out.String()
 }
